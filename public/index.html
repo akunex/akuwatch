@@ -1,0 +1,474 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AkuWatch</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+    <script src="/socket.io/socket.io.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        body {
+            background: url('https://images.unsplash.com/photo-1618005182384-a83a8bd57fbe?q=80&w=2564&auto=format&fit=crop') no-repeat center center fixed;
+            background-size: cover;
+            font-family: 'Segoe UI', sans-serif;
+        }
+        .glass-panel {
+            background: rgba(255, 255, 255, 0.7);
+            backdrop-filter: blur(20px);
+            -webkit-backdrop-filter: blur(20px);
+            border: 1px solid rgba(255, 255, 255, 0.5);
+            box-shadow: 0 8px 32px 0 rgba(31, 38, 135, 0.37);
+        }
+        .glass-input {
+            background: rgba(255, 255, 255, 0.5);
+            border: 1px solid rgba(0,0,0,0.1);
+        }
+        input[type=range] { -webkit-appearance: none; }
+        input[type=range]::-webkit-slider-thumb {
+            -webkit-appearance: none; height: 14px; width: 14px; border-radius: 50%;
+            background: #3b82f6; margin-top: -4px; box-shadow: 0 1px 3px rgba(0,0,0,0.3); cursor: pointer;
+        }
+        input[type=range]::-webkit-slider-runnable-track { width: 100%; height: 6px; cursor: pointer; }
+        .player-col { min-width: 400px; }
+        .dragging { opacity: 0.5; border: 2px dashed #3b82f6; }
+        .drag-over { border-top: 2px solid #3b82f6; }
+        .context-menu {
+            position: fixed; background: white; border: 1px solid #e5e7eb;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1); border-radius: 0.5rem;
+            padding: 0.25rem; z-index: 100; min-width: 120px;
+        }
+        .context-menu-item { padding: 0.5rem 1rem; font-size: 0.875rem; color: #374151; cursor: pointer; border-radius: 0.25rem; }
+        .context-menu-item:hover { background-color: #f3f4f6; color: #1f2937; }
+        .chat-msg-host { color: #d97706; font-weight: 600; }
+        .link-highlight { color: #2563eb; text-decoration: underline; cursor: pointer; }
+    </style>
+</head>
+<body class="h-screen w-full overflow-hidden flex flex-col text-gray-800" @click="closeContextMenu">
+
+    <div id="app" class="h-full flex flex-col">
+        <!-- MODAL CONNEXION -->
+        <div v-if="!roleChosen" class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-60 backdrop-blur-sm">
+            <div class="glass-panel p-8 rounded-2xl w-96 text-center">
+                <!-- LOGO DANS MODAL -->
+                <div class="flex justify-center mb-4">
+                    <div class="w-16 h-16 bg-red-600 rounded-xl flex items-center justify-center text-white text-2xl font-bold shadow-lg transform rotate-3 border-2 border-white">
+                        AW
+                    </div>
+                </div>
+                <h1 class="text-3xl font-bold mb-6 text-gray-900 tracking-tight">AkuWatch</h1>
+                
+                <div class="mb-6">
+                    <label class="block text-left text-sm font-medium text-gray-600 mb-1">Votre Pseudo</label>
+                    <input type="text" v-model="username" @keyup.enter="chooseRole('viewer')" placeholder="Entrez votre nom..." class="glass-input w-full px-4 py-2 rounded-lg outline-none focus:ring-2 focus:ring-blue-500">
+                </div>
+                <div class="space-y-3">
+                    <button @click="chooseRole('host')" class="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-semibold transition shadow-lg"><i class="fas fa-server mr-2"></i> Rejoindre en Hôte</button>
+                    <button @click="chooseRole('viewer')" class="w-full py-3 bg-white hover:bg-gray-50 text-gray-800 border border-gray-200 rounded-xl font-semibold transition shadow"><i class="fas fa-eye mr-2"></i> Rejoindre en Spectateur</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- MODAL AJOUT LIEN CHAT -->
+        <div v-if="addLinkModal.visible" class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-40 backdrop-blur-sm" @click.self="closeAddLinkModal">
+            <div class="bg-white rounded-xl shadow-2xl p-6 w-80 animate-fade-in">
+                <h3 class="text-lg font-bold mb-4 text-gray-800">Ajouter à la playlist</h3>
+                <div class="text-xs text-gray-500 mb-4 break-all italic bg-gray-100 p-2 rounded">{{ addLinkModal.url }}</div>
+                <div class="space-y-4">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Choisir le Player</label>
+                        <div class="flex gap-2">
+                            <button @click="addLinkModal.targetPid = 1" class="flex-1 py-2 rounded border" :class="addLinkModal.targetPid === 1 ? 'bg-blue-100 border-blue-500 text-blue-700' : 'bg-gray-50 text-gray-600'">Player 1</button>
+                            <button @click="addLinkModal.targetPid = 2" class="flex-1 py-2 rounded border" :class="addLinkModal.targetPid === 2 ? 'bg-purple-100 border-purple-500 text-purple-700' : 'bg-gray-50 text-gray-600'">Player 2</button>
+                        </div>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-1">Choisir la Playlist</label>
+                        <select v-model="addLinkModal.targetPlId" class="w-full border border-gray-300 rounded-lg p-2 text-sm">
+                            <option v-for="pl in state[addLinkModal.targetPid].playlists" :value="pl.id">{{ pl.name }}</option>
+                        </select>
+                    </div>
+                    <button @click="confirmAddLink" class="w-full py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg font-semibold">Ajouter</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- HEADER -->
+        <header class="glass-panel h-14 px-6 flex items-center justify-between z-10 shrink-0">
+            <div class="flex items-center gap-3">
+                <!-- LOGO HEADER -->
+                <div class="w-8 h-8 bg-red-600 rounded-lg flex items-center justify-center text-white font-bold shadow-md transform hover:scale-105 transition">AW</div>
+                <h1 class="font-bold text-lg tracking-tight hidden md:block text-gray-800">AkuWatch</h1>
+                
+                <span class="text-xs px-2 py-1 rounded-full bg-white/50 border border-gray-200" v-if="roleChosen">
+                    {{ isAdmin ? 'Hôte 👑' : 'Spectateur 👁️' }}
+                </span>
+            </div>
+            <div class="flex items-center gap-2 text-sm" v-if="roleChosen">
+                <div class="bg-white/50 px-3 py-1 rounded-full flex items-center gap-2 border border-gray-200 shadow-sm">
+                    <i class="fas fa-users text-gray-500"></i>
+                    <span class="font-semibold text-gray-700">{{ connectedUsers.length }}</span>
+                    <span class="text-gray-400">|</span>
+                    <div class="flex gap-1 max-w-[300px] overflow-hidden truncate">
+                        <span v-for="(user, index) in connectedUsers" :key="index" :class="user.isHost ? 'text-amber-500 font-bold drop-shadow-sm' : 'text-gray-600'">
+                            {{ user.name }}<span v-if="index < connectedUsers.length - 1" class="text-gray-400 font-normal">, </span>
+                        </span>
+                    </div>
+                </div>
+            </div>
+        </header>
+
+        <!-- MAIN GRID -->
+        <main class="flex-1 flex overflow-hidden p-2 gap-2 relative">
+            <div v-for="pid in [1, 2]" :key="pid" class="flex-1 flex flex-col glass-panel rounded-xl overflow-hidden relative player-col">
+                
+                <!-- HEADER PLAYER -->
+                <div class="p-3 border-b border-white/50 flex items-center gap-2 bg-white/30">
+                    <div class="w-6 h-6 rounded-full flex items-center justify-center text-xs font-bold text-white" :class="pid === 1 ? 'bg-blue-500' : 'bg-purple-500'">{{ pid }}</div>
+                    <div v-if="isAdmin" class="flex-1 relative">
+                        <input v-model="newVideoUrl[pid]" @keyup.enter="addVideo(pid)" type="text" :placeholder="`Lien YouTube...`" class="glass-input w-full pl-3 pr-8 py-1 text-sm rounded-full outline-none focus:ring-2 focus:ring-blue-500">
+                        <button @click="addVideo(pid)" class="absolute right-1 top-0.5 bottom-0.5 px-2 text-blue-600 hover:bg-blue-100 rounded-full transition"><i class="fas fa-plus text-xs"></i></button>
+                    </div>
+                    <div v-else class="flex-1 text-sm text-gray-500 italic">Lecture seule</div>
+                </div>
+
+                <!-- VIDÉO -->
+                <div class="w-full aspect-video bg-black relative shrink-0">
+                    <div :id="'player-target-' + pid" class="w-full h-full"></div>
+                    <!-- Pas de masque pour permettre l'interaction -->
+                    
+                    <div v-if="!state[pid].currentVideoId" class="absolute inset-0 flex flex-col items-center justify-center text-white/30 bg-gray-900 pointer-events-none">
+                        <i class="fas fa-film text-4xl mb-2"></i>
+                        <span class="text-sm">Aucune vidéo</span>
+                    </div>
+                </div>
+
+                <!-- CONTROLS -->
+                <div class="p-3 bg-white/40 border-b border-white/50 shrink-0 select-none">
+                    <div class="w-full h-1.5 bg-gray-300 rounded-full mb-3 cursor-pointer relative group" @click="handleSeek($event, pid)">
+                        <div class="absolute top-0 left-0 h-full rounded-full transition-all duration-100" :class="pid === 1 ? 'bg-blue-500' : 'bg-purple-500'" :style="{width: getProgress(pid) + '%'}"></div>
+                    </div>
+                    <div class="flex items-center justify-between">
+                        <div class="flex items-center gap-3">
+                            <button @click="togglePlay(pid)" :disabled="!isAdmin" class="w-8 h-8 rounded-full flex items-center justify-center text-white transition shadow" :class="[pid === 1 ? 'bg-blue-600 hover:bg-blue-700' : 'bg-purple-600 hover:bg-purple-700', !isAdmin ? 'opacity-50 cursor-not-allowed' : '']">
+                                <i :class="state[pid].isPlaying ? 'fas fa-pause' : 'fas fa-play ml-0.5'"></i>
+                            </button>
+                            <button @click="toggleLoop(pid)" :disabled="!isAdmin" class="w-8 h-8 rounded-full flex items-center justify-center transition" :class="state[pid].isLooping ? (pid === 1 ? 'bg-blue-100 text-blue-600' : 'bg-purple-100 text-purple-600') : 'text-gray-400 hover:bg-white/50'" title="Répéter la vidéo actuelle">
+                                <i class="fas fa-repeat text-sm"></i><span class="text-[10px] font-bold ml-0.5">1</span>
+                            </button>
+                            <span class="font-mono text-xs font-medium">{{ formatTime(state[pid].currentTime) }} / {{ formatTime(state[pid].duration) }}</span>
+                        </div>
+                        <div class="flex items-center gap-2">
+                             <button @click="toggleMute(pid)" class="w-6 text-center text-gray-600 hover:text-black focus:outline-none"><i :class="getVolumeIcon(pid)"></i></button>
+                            <input type="range" min="0" max="100" v-model="volume[pid]" @input="updateVolume(pid)" class="w-20 h-1.5 bg-gray-300 rounded-lg">
+                            <button @click="toggleFullscreen(pid)" class="ml-2 text-gray-600 hover:text-black"><i class="fas fa-expand text-sm"></i></button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- BIBLIOTHÈQUE -->
+                <div v-if="isAdmin" class="flex-1 flex flex-col overflow-hidden bg-white/20 relative">
+                    <div class="p-2 flex items-center justify-between text-xs border-b border-gray-200/50 flex-wrap gap-2">
+                        <div class="flex gap-1 flex-1 min-w-0 items-center">
+                            <select v-model="state[pid].activePlaylistId" @change="switchPlaylist(pid)" class="bg-white/60 border-none rounded px-2 py-1 outline-none flex-1 truncate max-w-[120px]">
+                                <option v-for="pl in state[pid].playlists" :value="pl.id">{{ pl.name }}</option>
+                            </select>
+                            <button @click="togglePlaylistManager(pid)" class="p-1 hover:bg-blue-100 rounded text-blue-600" title="Organiser"><i class="fas fa-sort"></i></button>
+                            <button @click="createPlaylist(pid)" class="p-1 hover:bg-blue-100 rounded text-blue-600" title="Créer"><i class="fas fa-plus"></i></button>
+                            <button @click="deletePlaylist(pid)" class="p-1 hover:bg-red-100 rounded text-red-600" title="Supprimer"><i class="fas fa-trash"></i></button>
+                        </div>
+                        <div class="flex gap-1 border-l border-r border-gray-300 px-2">
+                             <button @click="togglePlaylistLoop(pid)" class="p-1.5 rounded transition" :class="state[pid].isPlaylistLoop ? (pid === 1 ? 'bg-blue-100 text-blue-600' : 'bg-purple-100 text-purple-600') : 'text-gray-500 hover:bg-white/50'" title="Boucle Playlist"><i class="fas fa-sync"></i></button>
+                            <button @click="toggleShuffle(pid)" class="p-1.5 rounded transition" :class="state[pid].isShuffle ? (pid === 1 ? 'bg-blue-100 text-blue-600' : 'bg-purple-100 text-purple-600') : 'text-gray-500 hover:bg-white/50'" title="Aléatoire"><i class="fas fa-random"></i></button>
+                        </div>
+                        <div class="flex gap-1">
+                            <input type="file" :ref="el => fileInputs[pid] = el" @change="(e) => importData(e, pid)" class="hidden" accept=".json">
+                            <button @click="triggerImport(pid)" title="Import" class="p-1 hover:bg-gray-200 rounded"><i class="fas fa-upload"></i></button>
+                            <button @click="exportData(pid)" title="Export" class="p-1 hover:bg-gray-200 rounded"><i class="fas fa-download"></i></button>
+                            <button @click="renamePlaylist(pid)" title="Renommer" class="p-1 hover:bg-gray-200 rounded"><i class="fas fa-pen"></i></button>
+                        </div>
+                    </div>
+
+                    <div class="flex-1 overflow-y-auto p-2 space-y-1">
+                         <div v-if="getCurrentPlaylist(pid).videos.length === 0" class="text-center p-4 text-gray-400 text-xs italic">Vide</div>
+                         <div v-for="(video, idx) in getCurrentPlaylist(pid).videos" :key="idx" draggable="true" @dragstart="onDragStart($event, pid, idx, 'video')" @dragover.prevent @drop.stop="onDrop($event, pid, idx, 'video')" @contextmenu.prevent="openContextMenu($event, pid, idx, video.title)" class="flex items-center gap-2 p-1.5 rounded transition group cursor-pointer select-none border border-transparent" :class="[state[pid].currentVideoId === video.id ? (pid === 1 ? 'bg-blue-100 border-l-4 border-blue-500' : 'bg-purple-100 border-l-4 border-purple-500') : 'hover:bg-white/50']" @click="playVideo(pid, video.id)">
+                            <div class="cursor-grab text-gray-300 hover:text-gray-500 px-1 flex items-center gap-2"><i class="fas fa-grip-vertical text-xs"></i><span class="text-[10px] font-mono font-bold text-gray-400 w-4 text-right">{{ idx + 1 }}</span></div>
+                            <div class="relative w-12 h-8 shrink-0 bg-black rounded overflow-hidden"><img :src="`https://img.youtube.com/vi/${video.id}/default.jpg`" class="w-full h-full object-cover"></div>
+                            <div class="flex-1 min-w-0"><input v-if="editing[pid] === idx" v-model="tempTitle" @blur="saveTitle(pid, idx)" @keyup.enter="saveTitle(pid, idx)" class="w-full text-xs bg-white border px-1" autofocus><div v-else class="text-xs font-medium truncate">{{ video.title }}</div></div>
+                            <button @click.stop="removeVideo(pid, idx)" class="text-gray-400 hover:text-red-500 opacity-0 group-hover:opacity-100 px-1"><i class="fas fa-times"></i></button>
+                         </div>
+                    </div>
+
+                    <div v-if="managingPlaylists[pid]" class="absolute inset-0 z-20 bg-white/95 backdrop-blur flex flex-col">
+                        <div class="p-2 border-b flex justify-between items-center bg-gray-100"><span class="text-xs font-bold text-gray-600">Organisation</span><button @click="togglePlaylistManager(pid)" class="text-gray-500 hover:text-red-600"><i class="fas fa-times"></i></button></div>
+                        <div class="flex-1 overflow-y-auto p-2 space-y-1">
+                            <div v-for="(pl, idx) in state[pid].playlists" :key="pl.id" draggable="true" @dragstart="onDragStart($event, pid, idx, 'playlist')" @dragover.prevent @drop.stop="onDrop($event, pid, idx, 'playlist')" class="flex items-center gap-2 p-2 rounded border border-gray-200 bg-white cursor-grab hover:bg-gray-50">
+                                <div class="text-gray-400"><i class="fas fa-grip-lines"></i></div><div class="flex-1 text-xs font-medium">{{ pl.name }}</div><span class="text-[10px] bg-gray-200 px-1.5 rounded-full">{{ pl.videos.length }}</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div v-else class="flex-1 flex items-center justify-center bg-white/10 text-gray-400 text-xs italic"></div>
+            </div>
+        </main>
+
+        <!-- CHAT COMPONENT -->
+        <div v-if="roleChosen" class="fixed bottom-4 right-4 z-50 flex flex-col items-end">
+            <div v-show="chatOpen" class="bg-white/90 backdrop-blur-md border border-white/50 shadow-xl rounded-2xl w-80 h-96 flex flex-col mb-4 overflow-hidden transition-all origin-bottom-right">
+                <div class="p-3 border-b bg-white/50 flex justify-between items-center">
+                    <span class="font-bold text-gray-700">Chat</span>
+                    <button @click="chatOpen = false" class="text-gray-400 hover:text-gray-600"><i class="fas fa-times"></i></button>
+                </div>
+                <div class="flex-1 overflow-y-auto p-3 space-y-2 text-sm" ref="chatContainer">
+                    <div v-for="msg in chatMessages" :key="msg.id" class="break-words">
+                        <span :class="msg.isHost ? 'text-amber-600 font-bold' : 'font-bold text-gray-700'">{{ msg.author }}: </span>
+                        <span v-for="(part, idx) in parseMessage(msg.text)" :key="idx">
+                            <span v-if="part.isLink" class="text-blue-600 underline cursor-pointer hover:text-blue-800" @click="openLink(part.text)" @contextmenu.prevent="onLinkContextMenu($event, part.text)">{{ part.text }}</span>
+                            <span v-else>{{ part.text }}</span>
+                        </span>
+                    </div>
+                </div>
+                <div class="p-2 border-t bg-white/50">
+                    <input v-model="chatInput" @keyup.enter="sendMessage" placeholder="Votre message..." class="w-full rounded-full border-gray-300 px-3 py-1.5 text-sm outline-none focus:ring-2 focus:ring-blue-500 bg-white/80">
+                </div>
+            </div>
+            <button @click="chatOpen = !chatOpen" class="w-12 h-12 bg-blue-600 text-white rounded-full shadow-lg hover:bg-blue-700 transition flex items-center justify-center">
+                <i class="fas" :class="chatOpen ? 'fa-chevron-down' : 'fa-comment-dots'"></i>
+            </button>
+        </div>
+
+        <div v-if="contextMenu.visible" class="context-menu" :style="{ top: contextMenu.y + 'px', left: contextMenu.x + 'px' }"><div class="context-menu-item" @click="triggerRenameFromMenu"><i class="fas fa-pen mr-2 text-gray-400"></i> Renommer</div></div>
+    </div>
+
+    <script>
+        const { createApp, ref, onMounted, computed, nextTick, reactive, watch } = Vue;
+        const socket = io();
+        const tag = document.createElement('script');
+        tag.src = "https://www.youtube.com/iframe_api";
+        const firstScriptTag = document.getElementsByTagName('script')[0];
+        firstScriptTag.parentNode.insertBefore(tag, firstScriptTag);
+
+        createApp({
+            setup() {
+                const roleChosen = ref(false), isAdmin = ref(false), username = ref(''), connectedUsers = ref([]), hasHost = ref(false), draggingIndex = ref(-1);
+                const managingPlaylists = reactive({ 1: false, 2: false });
+                
+                const state = reactive({
+                    1: { playlists: [], activePlaylistId: 'default', currentVideoId: null, isPlaying: false, isLooping: false, isPlaylistLoop: false, isShuffle: false, currentTime: 0, duration: 0, lastUpdate: 0, serverLastKnownTime: 0 },
+                    2: { playlists: [], activePlaylistId: 'default', currentVideoId: null, isPlaying: false, isLooping: false, isPlaylistLoop: false, isShuffle: false, currentTime: 0, duration: 0, lastUpdate: 0, serverLastKnownTime: 0 }
+                });
+                const volume = reactive({ 1: 50, 2: 50 }), lastVolume = reactive({ 1: 50, 2: 50 }), newVideoUrl = reactive({ 1: '', 2: '' });
+                const fileInputs = ref({}), editing = reactive({ 1: -1, 2: -1 }), tempTitle = ref('');
+                const players = { 1: null, 2: null };
+                const contextMenu = reactive({ visible: false, x: 0, y: 0, pid: null, idx: null, currentTitle: '' });
+
+                const chatOpen = ref(false), chatInput = ref(''), chatMessages = ref([]), chatContainer = ref(null);
+                const addLinkModal = reactive({ visible: false, url: '', targetPid: 1, targetPlId: '' });
+
+                const chooseRole = (role) => {
+                    if (!username.value.trim()) { alert("Pseudo requis."); return; }
+                    if (role === 'host') {
+                        if (hasHost.value) { alert("Hôte déjà présent."); return; }
+                        const password = prompt("Mot de passe Hôte :");
+                        if (password === null) return; 
+                        socket.emit('loginHost', { username: username.value, password }, (res) => { if (res.success) { isAdmin.value = true; roleChosen.value = true; } else alert(res.message); });
+                    } else {
+                        socket.emit('loginViewer', username.value, (res) => { if (res.success) { isAdmin.value = false; roleChosen.value = true; } else alert(res.message); });
+                    }
+                };
+
+                window.onYouTubeIframeAPIReady = () => {
+                    [1, 2].forEach(pid => {
+                        players[pid] = new YT.Player('player-target-' + pid, {
+                            height: '100%', width: '100%', videoId: '',
+                            playerVars: { 'playsinline': 1, 'controls': 0, 'disablekb': 1, 'modestbranding': 1, 'rel': 0 },
+                            events: {
+                                'onReady': () => {
+                                    players[pid].setVolume(volume[pid]);
+                                    if (state[pid].currentVideoId) {
+                                        players[pid].cueVideoById(state[pid].currentVideoId);
+                                        if (state[pid].isPlaying) {
+                                            const lag = (Date.now() - state[pid].lastUpdate) / 1000;
+                                            players[pid].seekTo(state[pid].currentTime + lag);
+                                            players[pid].playVideo();
+                                        }
+                                    }
+                                },
+                                'onStateChange': (e) => onPlayerStateChange(e, pid)
+                            }
+                        });
+                    });
+                };
+
+                const onPlayerStateChange = (event, pid) => {
+                    if (isAdmin.value && event.data === YT.PlayerState.ENDED) {
+                        if (state[pid].isLooping) socket.emit('admin:play', { playerId: pid, time: 0 });
+                        else socket.emit('admin:requestNext', { playerId: pid });
+                    }
+                };
+
+                onMounted(() => {
+                    setInterval(() => {
+                        [1, 2].forEach(pid => {
+                            try {
+                                if (players[pid] && players[pid].getPlayerState) {
+                                    // Mise à jour pour TOUT LE MONDE (Admin et Viewer) pour le slider UI
+                                    if (players[pid].getCurrentTime) {
+                                        state[pid].currentTime = players[pid].getCurrentTime();
+                                        state[pid].duration = players[pid].getDuration();
+                                    }
+
+                                    // SYNCHRONISATION FORCÉE (Spectateur Only)
+                                    // Si le spectateur a désynchronisé son player (pause, seek manuel...), on le ramène de force
+                                    if (!isAdmin.value && window.YT && window.YT.PlayerState) {
+                                        const pState = players[pid].getPlayerState();
+                                        
+                                        // Calcul du temps théorique serveur
+                                        let serverTime = state[pid].serverLastKnownTime;
+                                        if (state[pid].isPlaying) {
+                                            serverTime += (Date.now() - state[pid].lastUpdate) / 1000;
+                                        }
+
+                                        // 1. Force Play/Pause
+                                        if (state[pid].isPlaying) {
+                                            // Si le serveur joue, mais local est Pause/Cued/Unstarted/Ended -> Play
+                                            if (pState === YT.PlayerState.PAUSED || pState === YT.PlayerState.CUED || pState === -1 || pState === YT.PlayerState.ENDED) {
+                                                players[pid].playVideo();
+                                            }
+                                        } else {
+                                            // Si le serveur est pause, mais local joue -> Pause
+                                            if (pState === YT.PlayerState.PLAYING || pState === YT.PlayerState.BUFFERING) {
+                                                players[pid].pauseVideo();
+                                            }
+                                        }
+
+                                        // 2. Force Seek (Correction décalage > 1.5s)
+                                        const localTime = players[pid].getCurrentTime();
+                                        if (Math.abs(localTime - serverTime) > 1.5) {
+                                            players[pid].seekTo(serverTime, true);
+                                        }
+                                    }
+                                }
+                            } catch(e) {}
+                        });
+                    }, 500);
+                });
+
+                socket.on('syncState', (serverState) => {
+                    [1, 2].forEach(pid => {
+                        const s = serverState[pid]; if (!s) return;
+                        state[pid].playlists = s.playlists;
+                        state[pid].activePlaylistId = s.activePlaylistId;
+                        state[pid].isPlaying = s.isPlaying;
+                        state[pid].isLooping = s.isLooping;
+                        state[pid].isPlaylistLoop = s.isPlaylistLoop;
+                        state[pid].isShuffle = s.isShuffle;
+                        
+                        // Update server reference for Sync
+                        state[pid].serverLastKnownTime = s.currentTime;
+                        state[pid].lastUpdate = s.lastUpdate;
+                        
+                        if (s.currentVideoId !== state[pid].currentVideoId) {
+                            state[pid].currentVideoId = s.currentVideoId;
+                            if (players[pid] && players[pid].cueVideoById) players[pid].cueVideoById(s.currentVideoId);
+                        }
+
+                        // Initial Seek on connect
+                        if (players[pid] && players[pid].seekTo) {
+                            const lag = s.isPlaying ? (Date.now() - s.lastUpdate) / 1000 : 0;
+                            if (Math.abs(players[pid].getCurrentTime() - (s.currentTime + lag)) > 2) {
+                                players[pid].seekTo(s.currentTime + lag);
+                            }
+                            s.isPlaying ? players[pid].playVideo() : players[pid].pauseVideo();
+                        }
+                    });
+                });
+
+                socket.on('chat:message', (msg) => { chatMessages.value.push(msg); nextTick(() => { if (chatContainer.value) chatContainer.value.scrollTop = chatContainer.value.scrollHeight; }); });
+                socket.on('changeVideo', ({ playerId, videoId }) => { state[playerId].currentVideoId = videoId; state[playerId].isPlaying = false; if (players[playerId]) players[playerId].cueVideoById(videoId); });
+                socket.on('updateUserList', (list) => connectedUsers.value = list);
+                socket.on('hostStatus', (data) => hasHost.value = data.hasHost);
+                socket.on('player:loop', ({ playerId, isLooping }) => state[playerId].isLooping = isLooping);
+                socket.on('player:playlistLoop', ({ playerId, isPlaylistLoop }) => state[playerId].isPlaylistLoop = isPlaylistLoop);
+                socket.on('player:shuffle', ({ playerId, isShuffle }) => state[playerId].isShuffle = isShuffle);
+                socket.on('updatePlaylists', ({ playerId, playlists, activeId }) => { state[playerId].playlists = playlists; if (activeId) state[playerId].activePlaylistId = activeId; });
+                socket.on('updateActivePlaylist', ({ playerId, id }) => state[playerId].activePlaylistId = id);
+                
+                socket.on('player:play', ({ playerId, time }) => {
+                    state[playerId].isPlaying = true;
+                    state[playerId].serverLastKnownTime = time;
+                    state[playerId].lastUpdate = Date.now();
+                    if (players[playerId]) { players[playerId].seekTo(time); players[playerId].playVideo(); }
+                });
+                socket.on('player:pause', ({ playerId, time }) => {
+                    state[playerId].isPlaying = false;
+                    state[playerId].serverLastKnownTime = time;
+                    state[playerId].lastUpdate = Date.now();
+                    if (players[playerId]) { players[playerId].seekTo(time); players[playerId].pauseVideo(); }
+                });
+                socket.on('player:seek', ({ playerId, time }) => { 
+                    state[playerId].serverLastKnownTime = time;
+                    state[playerId].lastUpdate = Date.now();
+                    if (players[playerId]) players[playerId].seekTo(time); 
+                });
+
+                const sendMessage = () => { if (!chatInput.value.trim()) return; socket.emit('chat:sendMessage', chatInput.value); chatInput.value = ''; };
+                const parseMessage = (text) => { const urlRegex = /(https?:\/\/(?:www\.)?(?:youtube\.com|youtu\.be)[^\s]+)/g; const parts = text.split(urlRegex); return parts.map(part => ({ text: part, isLink: urlRegex.test(part) })); };
+                const openLink = (url) => window.open(url, '_blank');
+                const onLinkContextMenu = (e, url) => { if (!isAdmin.value) return; addLinkModal.url = url; addLinkModal.targetPid = 1; addLinkModal.targetPlId = state[1].activePlaylistId; addLinkModal.visible = true; };
+                const closeAddLinkModal = () => { addLinkModal.visible = false; };
+                const confirmAddLink = () => { socket.emit('admin:addVideo', { playerId: addLinkModal.targetPid, url: addLinkModal.url, playlistId: addLinkModal.targetPlId }); closeAddLinkModal(); };
+
+                const onDragStart = (evt, pid, idx, type) => { evt.dataTransfer.effectAllowed = 'move'; evt.dataTransfer.setData('dragIdx', idx); evt.dataTransfer.setData('playerId', pid); evt.dataTransfer.setData('dragType', type); };
+                const onDrop = (evt, pid, targetIndex, dropType) => {
+                    const oldIndex = parseInt(evt.dataTransfer.getData('dragIdx')), srcPid = parseInt(evt.dataTransfer.getData('playerId')), srcType = evt.dataTransfer.getData('dragType');
+                    if (srcPid === pid && srcType === dropType && !isNaN(oldIndex) && oldIndex !== targetIndex) {
+                         if (dropType === 'video') socket.emit('admin:reorderVideos', { playerId: pid, playlistId: state[pid].activePlaylistId, oldIndex, newIndex: targetIndex });
+                         else if (dropType === 'playlist') socket.emit('admin:reorderPlaylists', { playerId: pid, oldIndex, newIndex: targetIndex });
+                    }
+                };
+                const openContextMenu = (e, pid, idx, title) => { if (!isAdmin.value) return; contextMenu.visible = true; contextMenu.x = e.clientX; contextMenu.y = e.clientY; contextMenu.pid = pid; contextMenu.idx = idx; contextMenu.currentTitle = title; };
+                const closeContextMenu = () => { contextMenu.visible = false; };
+                const triggerRenameFromMenu = () => { startEdit(contextMenu.pid, contextMenu.idx, contextMenu.currentTitle); closeContextMenu(); };
+                const addVideo = (pid) => { if (!newVideoUrl[pid]) return; socket.emit('admin:addVideo', { playerId: pid, url: newVideoUrl[pid] }); newVideoUrl[pid] = ''; };
+                const togglePlay = (pid) => { const time = players[pid] ? players[pid].getCurrentTime() : 0; state[pid].isPlaying ? socket.emit('admin:pause', { playerId: pid, time }) : socket.emit('admin:play', { playerId: pid, time }); };
+                const toggleLoop = (pid) => socket.emit('admin:toggleLoop', { playerId: pid });
+                const togglePlaylistLoop = (pid) => socket.emit('admin:togglePlaylistLoop', { playerId: pid });
+                const toggleShuffle = (pid) => socket.emit('admin:toggleShuffle', { playerId: pid });
+                const playVideo = (pid, vidId) => socket.emit('admin:selectVideo', { playerId: pid, videoId: vidId });
+                const handleSeek = (e, pid) => { if (!isAdmin.value || !players[pid]) return; socket.emit('admin:seek', { playerId: pid, time: (e.clientX - e.currentTarget.getBoundingClientRect().left) / e.currentTarget.getBoundingClientRect().width * state[pid].duration }); };
+                const createPlaylist = (pid) => { const name = prompt("Nom ?"); if (name) socket.emit('admin:createPlaylist', { playerId: pid, name }); };
+                const deletePlaylist = (pid) => { if (confirm("Supprimer ?")) socket.emit('admin:deletePlaylist', { playerId: pid, id: state[pid].activePlaylistId }); };
+                const switchPlaylist = (pid) => { if (isAdmin.value) socket.emit('admin:selectPlaylist', { playerId: pid, id: state[pid].activePlaylistId }); };
+                const renamePlaylist = (pid) => { const cur = getCurrentPlaylist(pid); const name = prompt("Nom ?", cur.name); if (name) socket.emit('admin:renamePlaylist', { playerId: pid, id: cur.id, name }); };
+                const startEdit = (pid, idx, title) => { if (!isAdmin.value) return; editing[pid] = idx; tempTitle.value = title; };
+                const saveTitle = (pid, idx) => { socket.emit('admin:renameVideo', { playerId: pid, playlistId: state[pid].activePlaylistId, videoIndex: idx, newName: tempTitle.value }); editing[pid] = -1; };
+                const removeVideo = (pid, idx) => socket.emit('admin:removeVideo', { playerId: pid, playlistId: state[pid].activePlaylistId, index: idx });
+                const exportData = (pid) => { const data = { playlists: state[pid].playlists, isPlaylistLoop: state[pid].isPlaylistLoop, isShuffle: state[pid].isShuffle }; const blob = new Blob([JSON.stringify(data)], { type: "application/json" }); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = `library_player_${pid}.json`; document.body.appendChild(a); a.click(); document.body.removeChild(a); };
+                const triggerImport = (pid) => fileInputs.value[pid].click();
+                const importData = (e, pid) => { const file = e.target.files[0]; if (!file) return; const reader = new FileReader(); reader.onload = (ev) => { try { socket.emit('admin:importData', { playerId: pid, data: JSON.parse(ev.target.result) }); } catch (err) { alert("JSON Invalide"); } }; reader.readAsText(file); e.target.value = ''; };
+                const getCurrentPlaylist = (pid) => state[pid].playlists.find(p => p.id === state[pid].activePlaylistId) || { videos: [] };
+                const updateVolume = (pid) => players[pid] && players[pid].setVolume(volume[pid]);
+                const toggleMute = (pid) => { if (volume[pid] > 0) { lastVolume[pid] = volume[pid]; volume[pid] = 0; } else { volume[pid] = lastVolume[pid] || 50; } updateVolume(pid); };
+                const getVolumeIcon = (pid) => { const v = volume[pid]; if (v == 0) return 'fas fa-volume-mute text-gray-400'; if (v < 50) return 'fas fa-volume-down text-gray-600'; return 'fas fa-volume-up text-gray-600'; };
+                const toggleFullscreen = (pid) => { const el = document.getElementById('player-target-' + pid).parentElement; if (!document.fullscreenElement) el.requestFullscreen(); else document.exitFullscreen(); };
+                const getProgress = (pid) => state[pid].duration ? (state[pid].currentTime / state[pid].duration) * 100 : 0;
+                const formatTime = (s) => { if(!s) return "0:00"; const m=Math.floor(s/60); const sec=Math.floor(s%60); return `${m}:${sec<10?'0'+sec:sec}`; };
+                const togglePlaylistManager = (pid) => { if (isAdmin.value) managingPlaylists[pid] = !managingPlaylists[pid]; };
+
+                watch(() => addLinkModal.targetPid, (newPid) => { addLinkModal.targetPlId = state[newPid].activePlaylistId; });
+
+                return {
+                    roleChosen, isAdmin, chooseRole, state, volume, newVideoUrl, fileInputs, editing, tempTitle, username, connectedUsers, draggingIndex, contextMenu, managingPlaylists,
+                    chatOpen, chatInput, chatMessages, chatContainer, sendMessage, parseMessage, openLink, onLinkContextMenu, addLinkModal, closeAddLinkModal, confirmAddLink,
+                    addVideo, togglePlay, toggleLoop, togglePlaylistLoop, toggleShuffle, playVideo, handleSeek, createPlaylist, deletePlaylist, switchPlaylist,
+                    renamePlaylist, startEdit, saveTitle, removeVideo, exportData, triggerImport, importData,
+                    updateVolume, toggleFullscreen, getProgress, formatTime, getCurrentPlaylist, getVolumeIcon, toggleMute,
+                    onDragStart, onDrop, openContextMenu, closeContextMenu, triggerRenameFromMenu, togglePlaylistManager
+                };
+            }
+        }).mount('#app');
+    </script>
+</body>
+</html>
