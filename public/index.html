@@ -349,21 +349,14 @@
                     setInterval(() => {
                         [1, 2].forEach(pid => {
                             try {
-                                if (!players[pid] || typeof players[pid].getPlayerState !== 'function') return;
-                                const pState = players[pid].getPlayerState();
+                                if (players[pid] && players[pid].getPlayerState) {
+                                    const pState = players[pid].getPlayerState();
 
-                                // Mise à jour pour TOUT LE MONDE (Admin et Viewer) pour le slider UI
-                                if (typeof players[pid].getCurrentTime === 'function' && typeof players[pid].getDuration === 'function') {
-                                    const currentTime = players[pid].getCurrentTime();
-                                    const duration = players[pid].getDuration();
-                                    // Only update if values are valid
-                                    if (typeof currentTime === 'number' && !isNaN(currentTime)) {
-                                        state[pid].currentTime = currentTime;
+                                    // Mise à jour pour TOUT LE MONDE (Admin et Viewer) pour le slider UI
+                                    if (players[pid].getCurrentTime) {
+                                        state[pid].currentTime = players[pid].getCurrentTime();
+                                        state[pid].duration = players[pid].getDuration();
                                     }
-                                    if (typeof duration === 'number' && !isNaN(duration) && duration > 0) {
-                                        state[pid].duration = duration;
-                                    }
-                                }
 
                                     // VÉRIFICATION: Si une vidéo devrait être chargée mais le player est vide
                                     // État -1 (unstarted) avec une vidéo qui devrait être là = problème
@@ -448,26 +441,8 @@
                     });
                 });
 
-                socket.on('chat:message', (msg) => {
-                    chatMessages.value.push(msg);
-                    // Limiter à 500 messages pour éviter les fuites mémoire
-                    if (chatMessages.value.length > 500) {
-                        chatMessages.value = chatMessages.value.slice(-500);
-                    }
-                    nextTick(() => { if (chatContainer.value) chatContainer.value.scrollTop = chatContainer.value.scrollHeight; });
-                });
-                socket.on('changeVideo', ({ playerId, videoId }) => {
-                    state[playerId].currentVideoId = videoId;
-                    state[playerId].isPlaying = false;
-                    if (players[playerId]) {
-                        if (videoId) {
-                            players[playerId].cueVideoById(videoId);
-                        } else {
-                            // No video - stop and clear player
-                            try { players[playerId].stopVideo(); } catch(e) {}
-                        }
-                    }
-                });
+                socket.on('chat:message', (msg) => { chatMessages.value.push(msg); nextTick(() => { if (chatContainer.value) chatContainer.value.scrollTop = chatContainer.value.scrollHeight; }); });
+                socket.on('changeVideo', ({ playerId, videoId }) => { state[playerId].currentVideoId = videoId; state[playerId].isPlaying = false; if (players[playerId]) players[playerId].cueVideoById(videoId); });
                 socket.on('updateUserList', (list) => connectedUsers.value = list);
                 socket.on('hostStatus', (data) => hasHost.value = data.hasHost);
                 socket.on('player:loop', ({ playerId, isLooping }) => state[playerId].isLooping = isLooping);
@@ -524,14 +499,7 @@
                 });
 
                 const sendMessage = () => { if (!chatInput.value.trim()) return; socket.emit('chat:sendMessage', chatInput.value); chatInput.value = ''; };
-                const parseMessage = (text) => {
-                    if (!text || typeof text !== 'string') return [{ text: '', isLink: false }];
-                    const urlRegex = /(https?:\/\/(?:www\.)?(?:youtube\.com|youtu\.be)[^\s]+)/g;
-                    const parts = text.split(urlRegex);
-                    // Use a fresh regex for testing to avoid lastIndex state issues
-                    const testRegex = /^https?:\/\/(?:www\.)?(?:youtube\.com|youtu\.be)/;
-                    return parts.filter(p => p).map(part => ({ text: part, isLink: testRegex.test(part) }));
-                };
+                const parseMessage = (text) => { const urlRegex = /(https?:\/\/(?:www\.)?(?:youtube\.com|youtu\.be)[^\s]+)/g; const parts = text.split(urlRegex); return parts.map(part => ({ text: part, isLink: urlRegex.test(part) })); };
                 const openLink = (url) => window.open(url, '_blank');
                 const onLinkContextMenu = (e, url) => { if (!isAdmin.value) return; addLinkModal.url = url; addLinkModal.targetPid = 1; addLinkModal.targetPlId = state[1].activePlaylistId; addLinkModal.visible = true; };
                 const closeAddLinkModal = () => { addLinkModal.visible = false; };
@@ -545,18 +513,7 @@
                          else if (dropType === 'playlist') socket.emit('admin:reorderPlaylists', { playerId: pid, oldIndex, newIndex: targetIndex });
                     }
                 };
-                const openContextMenu = (e, pid, idx, title) => {
-                    if (!isAdmin.value) return;
-                    contextMenu.visible = true;
-                    // Prevent menu from going off-screen
-                    const menuWidth = 150;
-                    const menuHeight = 50;
-                    contextMenu.x = Math.min(e.clientX, window.innerWidth - menuWidth);
-                    contextMenu.y = Math.min(e.clientY, window.innerHeight - menuHeight);
-                    contextMenu.pid = pid;
-                    contextMenu.idx = idx;
-                    contextMenu.currentTitle = title;
-                };
+                const openContextMenu = (e, pid, idx, title) => { if (!isAdmin.value) return; contextMenu.visible = true; contextMenu.x = e.clientX; contextMenu.y = e.clientY; contextMenu.pid = pid; contextMenu.idx = idx; contextMenu.currentTitle = title; };
                 const closeContextMenu = () => { contextMenu.visible = false; };
                 const triggerRenameFromMenu = () => { startEdit(contextMenu.pid, contextMenu.idx, contextMenu.currentTitle); closeContextMenu(); };
                 const addVideo = (pid) => { if (!newVideoUrl[pid]) return; socket.emit('admin:addVideo', { playerId: pid, url: newVideoUrl[pid] }); newVideoUrl[pid] = ''; };
@@ -565,14 +522,7 @@
                 const togglePlaylistLoop = (pid) => socket.emit('admin:togglePlaylistLoop', { playerId: pid });
                 const toggleShuffle = (pid) => socket.emit('admin:toggleShuffle', { playerId: pid });
                 const playVideo = (pid, vidId) => socket.emit('admin:selectVideo', { playerId: pid, videoId: vidId });
-                const handleSeek = (e, pid) => {
-                    if (!isAdmin.value || !players[pid]) return;
-                    const duration = state[pid].duration;
-                    if (!duration || duration <= 0) return; // Prevent division by zero
-                    const rect = e.currentTarget.getBoundingClientRect();
-                    const progress = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-                    socket.emit('admin:seek', { playerId: pid, time: progress * duration });
-                };
+                const handleSeek = (e, pid) => { if (!isAdmin.value || !players[pid]) return; socket.emit('admin:seek', { playerId: pid, time: (e.clientX - e.currentTarget.getBoundingClientRect().left) / e.currentTarget.getBoundingClientRect().width * state[pid].duration }); };
                 const createPlaylist = (pid) => { const name = prompt("Nom ?"); if (name) socket.emit('admin:createPlaylist', { playerId: pid, name }); };
                 const deletePlaylist = (pid) => { if (confirm("Supprimer ?")) socket.emit('admin:deletePlaylist', { playerId: pid, id: state[pid].activePlaylistId }); };
                 const switchPlaylist = (pid) => { if (isAdmin.value) socket.emit('admin:selectPlaylist', { playerId: pid, id: state[pid].activePlaylistId }); };
@@ -583,28 +533,13 @@
                 const exportData = (pid) => { const data = { playlists: state[pid].playlists, isPlaylistLoop: state[pid].isPlaylistLoop, isShuffle: state[pid].isShuffle }; const blob = new Blob([JSON.stringify(data)], { type: "application/json" }); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = `library_player_${pid}.json`; document.body.appendChild(a); a.click(); document.body.removeChild(a); };
                 const triggerImport = (pid) => fileInputs.value[pid].click();
                 const importData = (e, pid) => { const file = e.target.files[0]; if (!file) return; const reader = new FileReader(); reader.onload = (ev) => { try { socket.emit('admin:importData', { playerId: pid, data: JSON.parse(ev.target.result) }); } catch (err) { alert("JSON Invalide"); } }; reader.readAsText(file); e.target.value = ''; };
-                const getCurrentPlaylist = (pid) => state[pid].playlists.find(p => p.id === state[pid].activePlaylistId) || { id: '', name: 'Playlist', videos: [] };
+                const getCurrentPlaylist = (pid) => state[pid].playlists.find(p => p.id === state[pid].activePlaylistId) || { videos: [] };
                 const updateVolume = (pid) => players[pid] && players[pid].setVolume(volume[pid]);
                 const toggleMute = (pid) => { if (volume[pid] > 0) { lastVolume[pid] = volume[pid]; volume[pid] = 0; } else { volume[pid] = lastVolume[pid] || 50; } updateVolume(pid); };
                 const getVolumeIcon = (pid) => { const v = volume[pid]; if (v == 0) return 'fas fa-volume-mute text-gray-400'; if (v < 50) return 'fas fa-volume-down text-gray-600'; return 'fas fa-volume-up text-gray-600'; };
-                const toggleFullscreen = (pid) => {
-                    try {
-                        const el = document.getElementById('player-target-' + pid)?.parentElement;
-                        if (!el) return;
-                        if (!document.fullscreenElement) {
-                            el.requestFullscreen?.() || el.webkitRequestFullscreen?.() || el.mozRequestFullScreen?.();
-                        } else {
-                            document.exitFullscreen?.() || document.webkitExitFullscreen?.() || document.mozCancelFullScreen?.();
-                        }
-                    } catch (e) { console.warn('Fullscreen non supporté:', e); }
-                };
+                const toggleFullscreen = (pid) => { const el = document.getElementById('player-target-' + pid).parentElement; if (!document.fullscreenElement) el.requestFullscreen(); else document.exitFullscreen(); };
                 const getProgress = (pid) => state[pid].duration ? (state[pid].currentTime / state[pid].duration) * 100 : 0;
-                const formatTime = (s) => {
-                    if (!s || typeof s !== 'number' || isNaN(s) || !isFinite(s) || s < 0) return "0:00";
-                    const m = Math.floor(s / 60);
-                    const sec = Math.floor(s % 60);
-                    return `${m}:${sec < 10 ? '0' + sec : sec}`;
-                };
+                const formatTime = (s) => { if(!s) return "0:00"; const m=Math.floor(s/60); const sec=Math.floor(s%60); return `${m}:${sec<10?'0'+sec:sec}`; };
                 const togglePlaylistManager = (pid) => { if (isAdmin.value) managingPlaylists[pid] = !managingPlaylists[pid]; };
 
                 watch(() => addLinkModal.targetPid, (newPid) => { addLinkModal.targetPlId = state[newPid].activePlaylistId; });
