@@ -70,6 +70,48 @@
             </div>
         </div>
 
+        <!-- MODAL AIDE YOUTUBE -->
+        <div v-if="showYouTubeHelp" class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-40 backdrop-blur-sm" @click.self="showYouTubeHelp = false">
+            <div class="bg-white rounded-xl shadow-2xl p-6 w-96 max-w-[90vw] animate-fade-in">
+                <div class="flex items-center justify-between mb-4">
+                    <h3 class="text-lg font-bold text-gray-800"><i class="fab fa-youtube text-red-600 mr-2"></i>Aide YouTube</h3>
+                    <button @click="showYouTubeHelp = false" class="text-gray-400 hover:text-gray-600"><i class="fas fa-times"></i></button>
+                </div>
+
+                <div class="space-y-4 text-sm text-gray-600">
+                    <div class="bg-amber-50 border border-amber-200 rounded-lg p-3">
+                        <p class="font-semibold text-amber-800 mb-1"><i class="fas fa-exclamation-triangle mr-1"></i> Vérification robot ?</p>
+                        <p class="text-amber-700">Si YouTube affiche "Connectez-vous pour confirmer que vous n'êtes pas un robot", voici les solutions :</p>
+                    </div>
+
+                    <div class="space-y-2">
+                        <div class="flex items-start gap-2">
+                            <span class="bg-blue-100 text-blue-600 rounded-full w-5 h-5 flex items-center justify-center text-xs font-bold shrink-0">1</span>
+                            <p><strong>Connectez-vous à YouTube</strong> dans un autre onglet avec votre compte Google, puis rafraîchissez cette page.</p>
+                        </div>
+                        <div class="flex items-start gap-2">
+                            <span class="bg-blue-100 text-blue-600 rounded-full w-5 h-5 flex items-center justify-center text-xs font-bold shrink-0">2</span>
+                            <p><strong>Cliquez sur le player</strong> pour interagir avec la demande de vérification YouTube si elle apparaît.</p>
+                        </div>
+                        <div class="flex items-start gap-2">
+                            <span class="bg-blue-100 text-blue-600 rounded-full w-5 h-5 flex items-center justify-center text-xs font-bold shrink-0">3</span>
+                            <p><strong>Effacez les cookies</strong> de votre navigateur ou utilisez un autre navigateur.</p>
+                        </div>
+                        <div class="flex items-start gap-2">
+                            <span class="bg-blue-100 text-blue-600 rounded-full w-5 h-5 flex items-center justify-center text-xs font-bold shrink-0">4</span>
+                            <p><strong>Utilisez un VPN</strong> ou changez de réseau si le problème persiste.</p>
+                        </div>
+                    </div>
+
+                    <div class="bg-gray-100 rounded-lg p-3 text-xs text-gray-500">
+                        <i class="fas fa-info-circle mr-1"></i> Ce problème vient de YouTube et non de l'application. YouTube limite les requêtes pour protéger contre les bots.
+                    </div>
+                </div>
+
+                <button @click="showYouTubeHelp = false" class="mt-4 w-full py-2 bg-gray-800 hover:bg-gray-900 text-white rounded-lg font-semibold">Compris</button>
+            </div>
+        </div>
+
         <!-- MODAL AJOUT LIEN CHAT -->
         <div v-if="addLinkModal.visible" class="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-40 backdrop-blur-sm" @click.self="closeAddLinkModal">
             <div class="bg-white rounded-xl shadow-2xl p-6 w-80 animate-fade-in">
@@ -137,11 +179,16 @@
                 <div class="w-full aspect-video bg-black relative shrink-0">
                     <div :id="'player-target-' + pid" class="w-full h-full"></div>
                     <!-- Pas de masque pour permettre l'interaction -->
-                    
+
                     <div v-if="!state[pid].currentVideoId" class="absolute inset-0 flex flex-col items-center justify-center text-white/30 bg-gray-900 pointer-events-none">
                         <i class="fas fa-film text-4xl mb-2"></i>
                         <span class="text-sm">Aucune vidéo</span>
                     </div>
+
+                    <!-- Bouton d'aide pour les problèmes YouTube -->
+                    <button @click="showYouTubeHelp = true" class="absolute top-2 right-2 w-6 h-6 bg-white/80 hover:bg-white rounded-full flex items-center justify-center text-gray-600 hover:text-gray-800 shadow-md z-10 text-xs" title="Aide YouTube">
+                        <i class="fas fa-question"></i>
+                    </button>
                 </div>
 
                 <!-- CONTROLS -->
@@ -266,6 +313,7 @@
 
                 const chatOpen = ref(false), chatInput = ref(''), chatMessages = ref([]), chatContainer = ref(null);
                 const addLinkModal = reactive({ visible: false, url: '', targetPid: 1, targetPlId: '' });
+                const showYouTubeHelp = ref(false);
 
                 const chooseRole = (role, autoReconnect = false, savedPassword = null) => {
                     if (!username.value.trim()) { if (!autoReconnect) alert("Pseudo requis."); return; }
@@ -600,7 +648,7 @@
                 watch(() => addLinkModal.targetPid, (newPid) => { addLinkModal.targetPlId = state[newPid].activePlaylistId; });
 
                 return {
-                    roleChosen, isAdmin, chooseRole, state, volume, newVideoUrl, fileInputs, editing, tempTitle, username, connectedUsers, draggingIndex, contextMenu, managingPlaylists,
+                    roleChosen, isAdmin, chooseRole, state, volume, newVideoUrl, fileInputs, editing, tempTitle, username, connectedUsers, draggingIndex, contextMenu, managingPlaylists, showYouTubeHelp,
                     chatOpen, chatInput, chatMessages, chatContainer, sendMessage, parseMessage, openLink, onLinkContextMenu, addLinkModal, closeAddLinkModal, confirmAddLink,
                     addVideo, togglePlay, toggleLoop, togglePlaylistLoop, toggleShuffle, playVideo, handleSeek, createPlaylist, deletePlaylist, switchPlaylist,
                     renamePlaylist, startEdit, saveTitle, removeVideo, exportData, triggerImport, importData,
