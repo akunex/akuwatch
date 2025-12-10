@@ -65,18 +65,20 @@ function broadcastUserList() {
     io.emit('updateUserList', list);
 }
 
-function isPseudoTaken(username) {
-    const lowerName = username.toLowerCase();
-    return Object.values(connectedUsers).some(u => u.toLowerCase() === lowerName);
-}
-
 // --- GESTION SOCKET.IO ---
 io.on('connection', (socket) => {
     console.log('Connexion:', socket.id);
 
+    // Envoyer l'état complet au nouveau client
     socket.emit('syncState', roomState);
     socket.emit('hostStatus', { hasHost: hostId !== null });
-    broadcastUserList();
+
+    // Envoyer la liste des utilisateurs directement à ce client (pas broadcast)
+    const userList = Object.entries(connectedUsers).map(([id, name]) => ({
+        name: name,
+        isHost: id === hostId
+    }));
+    socket.emit('updateUserList', userList);
 
     // --- CHAT ---
     socket.on('chat:sendMessage', (messageText) => {
@@ -94,26 +96,37 @@ io.on('connection', (socket) => {
 
     // --- CONNEXION ATOMIQUE ---
     socket.on('loginViewer', (username, callback) => {
-        if (isPseudoTaken(username)) {
+        // Vérifier si le pseudo est pris par quelqu'un d'autre (pas par ce socket)
+        const existingSocketId = Object.entries(connectedUsers).find(([id, name]) =>
+            name.toLowerCase() === username.toLowerCase() && id !== socket.id
+        );
+        if (existingSocketId) {
             callback({ success: false, message: "Ce pseudo est déjà pris." });
             return;
         }
         connectedUsers[socket.id] = username;
         callback({ success: true });
         broadcastUserList();
+        // Envoyer l'état actuel au viewer qui vient de se connecter
+        socket.emit('syncState', roomState);
     });
 
     socket.on('loginHost', ({ username, password }, callback) => {
-        if (hostId !== null) {
-            callback({ success: false, message: "Impossible : Un hôte est déjà présent." });
-            return;
-        }
         // Vérification avec la variable d'environnement ou défaut
         if (password !== HOST_PASSWORD) {
             callback({ success: false, message: "Mot de passe incorrect." });
             return;
         }
-        if (isPseudoTaken(username)) {
+        // Si un hôte existe déjà et ce n'est pas une reconnexion du même user
+        if (hostId !== null && connectedUsers[hostId] !== username) {
+            callback({ success: false, message: "Impossible : Un hôte est déjà présent." });
+            return;
+        }
+        // Vérifier si le pseudo est pris par quelqu'un d'autre
+        const existingSocketId = Object.entries(connectedUsers).find(([id, name]) =>
+            name.toLowerCase() === username.toLowerCase() && id !== socket.id
+        );
+        if (existingSocketId) {
             callback({ success: false, message: "Ce pseudo est déjà pris." });
             return;
         }
@@ -123,6 +136,8 @@ io.on('connection', (socket) => {
         callback({ success: true });
         io.emit('hostStatus', { hasHost: true });
         broadcastUserList();
+        // Envoyer l'état actuel au host qui vient de se connecter
+        socket.emit('syncState', roomState);
     });
 
     const onlyHost = (actionCallback) => {
