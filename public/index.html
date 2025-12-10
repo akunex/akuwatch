@@ -315,15 +315,25 @@
                     });
                 };
 
-                // Gestion des erreurs YouTube - tente de recharger la vidéo
+                // Gestion des erreurs YouTube - tente de recharger la vidéo avec limite
                 const onPlayerError = (event, pid) => {
                     console.warn(`Erreur YouTube Player ${pid}:`, event.data);
                     // Codes d'erreur: 2=invalid param, 5=HTML5 error, 100=not found, 101/150=not embeddable
-                    if (state[pid].currentVideoId) {
+
+                    // Pour les erreurs 100, 101, 150 (vidéo non disponible/non intégrable), ne pas retenter
+                    if ([100, 101, 150].includes(event.data)) {
+                        console.warn(`Player ${pid}: Vidéo non disponible ou non intégrable`);
+                        errorRetryCount[pid] = MAX_ERROR_RETRIES; // Bloquer les retentatives
+                        return;
+                    }
+
+                    if (state[pid].currentVideoId && errorRetryCount[pid] < MAX_ERROR_RETRIES) {
+                        errorRetryCount[pid]++;
+                        console.log(`Player ${pid}: Tentative ${errorRetryCount[pid]}/${MAX_ERROR_RETRIES}`);
                         // Attendre un peu puis tenter de recharger la vidéo
                         setTimeout(() => {
                             if (players[pid] && state[pid].currentVideoId) {
-                                console.log(`Tentative de rechargement de la vidéo pour Player ${pid}`);
+                                console.log(`Player ${pid}: Rechargement de la vidéo...`);
                                 players[pid].cueVideoById(state[pid].currentVideoId);
                                 if (state[pid].isPlaying) {
                                     const lag = (Date.now() - state[pid].lastUpdate) / 1000;
@@ -331,7 +341,9 @@
                                     players[pid].playVideo();
                                 }
                             }
-                        }, 2000);
+                        }, 2000 * errorRetryCount[pid]); // Backoff exponentiel
+                    } else if (errorRetryCount[pid] >= MAX_ERROR_RETRIES) {
+                        console.warn(`Player ${pid}: Nombre max de tentatives atteint`);
                     }
                 };
 
@@ -342,8 +354,10 @@
                     }
                 };
 
-                // Variable pour tracker si on a déjà tenté de recharger la vidéo récemment
+                // Variables pour tracker les tentatives de rechargement vidéo
                 const lastVideoReloadAttempt = reactive({ 1: 0, 2: 0 });
+                const errorRetryCount = reactive({ 1: 0, 2: 0 });
+                const MAX_ERROR_RETRIES = 3;
 
                 onMounted(() => {
                     setInterval(() => {
@@ -442,7 +456,12 @@
                 });
 
                 socket.on('chat:message', (msg) => { chatMessages.value.push(msg); nextTick(() => { if (chatContainer.value) chatContainer.value.scrollTop = chatContainer.value.scrollHeight; }); });
-                socket.on('changeVideo', ({ playerId, videoId }) => { state[playerId].currentVideoId = videoId; state[playerId].isPlaying = false; if (players[playerId]) players[playerId].cueVideoById(videoId); });
+                socket.on('changeVideo', ({ playerId, videoId }) => {
+                    state[playerId].currentVideoId = videoId;
+                    state[playerId].isPlaying = false;
+                    errorRetryCount[playerId] = 0; // Réinitialiser le compteur d'erreurs pour la nouvelle vidéo
+                    if (players[playerId]) players[playerId].cueVideoById(videoId);
+                });
                 socket.on('updateUserList', (list) => connectedUsers.value = list);
                 socket.on('hostStatus', (data) => hasHost.value = data.hasHost);
                 socket.on('player:loop', ({ playerId, isLooping }) => state[playerId].isLooping = isLooping);
@@ -499,7 +518,14 @@
                 });
 
                 const sendMessage = () => { if (!chatInput.value.trim()) return; socket.emit('chat:sendMessage', chatInput.value); chatInput.value = ''; };
-                const parseMessage = (text) => { const urlRegex = /(https?:\/\/(?:www\.)?(?:youtube\.com|youtu\.be)[^\s]+)/g; const parts = text.split(urlRegex); return parts.map(part => ({ text: part, isLink: urlRegex.test(part) })); };
+                const parseMessage = (text) => {
+                    if (!text || typeof text !== 'string') return [{ text: '', isLink: false }];
+                    const urlRegex = /(https?:\/\/(?:www\.)?(?:youtube\.com|youtu\.be)[^\s]+)/gi;
+                    const parts = text.split(urlRegex);
+                    // Créer une nouvelle regex pour tester chaque partie (évite le problème de lastIndex)
+                    const testRegex = /^https?:\/\/(?:www\.)?(?:youtube\.com|youtu\.be)/i;
+                    return parts.filter(part => part !== '').map(part => ({ text: part, isLink: testRegex.test(part) }));
+                };
                 const openLink = (url) => window.open(url, '_blank');
                 const onLinkContextMenu = (e, url) => { if (!isAdmin.value) return; addLinkModal.url = url; addLinkModal.targetPid = 1; addLinkModal.targetPlId = state[1].activePlaylistId; addLinkModal.visible = true; };
                 const closeAddLinkModal = () => { addLinkModal.visible = false; };
@@ -522,7 +548,15 @@
                 const togglePlaylistLoop = (pid) => socket.emit('admin:togglePlaylistLoop', { playerId: pid });
                 const toggleShuffle = (pid) => socket.emit('admin:toggleShuffle', { playerId: pid });
                 const playVideo = (pid, vidId) => socket.emit('admin:selectVideo', { playerId: pid, videoId: vidId });
-                const handleSeek = (e, pid) => { if (!isAdmin.value || !players[pid]) return; socket.emit('admin:seek', { playerId: pid, time: (e.clientX - e.currentTarget.getBoundingClientRect().left) / e.currentTarget.getBoundingClientRect().width * state[pid].duration }); };
+                const handleSeek = (e, pid) => {
+                    if (!isAdmin.value || !players[pid]) return;
+                    const duration = state[pid].duration;
+                    if (!duration || duration <= 0) return;
+                    const rect = e.currentTarget.getBoundingClientRect();
+                    if (rect.width <= 0) return;
+                    const seekTime = Math.max(0, Math.min(duration, ((e.clientX - rect.left) / rect.width) * duration));
+                    socket.emit('admin:seek', { playerId: pid, time: seekTime });
+                };
                 const createPlaylist = (pid) => { const name = prompt("Nom ?"); if (name) socket.emit('admin:createPlaylist', { playerId: pid, name }); };
                 const deletePlaylist = (pid) => { if (confirm("Supprimer ?")) socket.emit('admin:deletePlaylist', { playerId: pid, id: state[pid].activePlaylistId }); };
                 const switchPlaylist = (pid) => { if (isAdmin.value) socket.emit('admin:selectPlaylist', { playerId: pid, id: state[pid].activePlaylistId }); };
@@ -533,11 +567,32 @@
                 const exportData = (pid) => { const data = { playlists: state[pid].playlists, isPlaylistLoop: state[pid].isPlaylistLoop, isShuffle: state[pid].isShuffle }; const blob = new Blob([JSON.stringify(data)], { type: "application/json" }); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = `library_player_${pid}.json`; document.body.appendChild(a); a.click(); document.body.removeChild(a); };
                 const triggerImport = (pid) => fileInputs.value[pid].click();
                 const importData = (e, pid) => { const file = e.target.files[0]; if (!file) return; const reader = new FileReader(); reader.onload = (ev) => { try { socket.emit('admin:importData', { playerId: pid, data: JSON.parse(ev.target.result) }); } catch (err) { alert("JSON Invalide"); } }; reader.readAsText(file); e.target.value = ''; };
-                const getCurrentPlaylist = (pid) => state[pid].playlists.find(p => p.id === state[pid].activePlaylistId) || { videos: [] };
+                const getCurrentPlaylist = (pid) => {
+                    if (!state[pid] || !Array.isArray(state[pid].playlists)) {
+                        return { id: 'default', name: 'Playlist', videos: [] };
+                    }
+                    return state[pid].playlists.find(p => p.id === state[pid].activePlaylistId) || { id: 'default', name: 'Playlist', videos: [] };
+                };
                 const updateVolume = (pid) => players[pid] && players[pid].setVolume(volume[pid]);
                 const toggleMute = (pid) => { if (volume[pid] > 0) { lastVolume[pid] = volume[pid]; volume[pid] = 0; } else { volume[pid] = lastVolume[pid] || 50; } updateVolume(pid); };
                 const getVolumeIcon = (pid) => { const v = volume[pid]; if (v == 0) return 'fas fa-volume-mute text-gray-400'; if (v < 50) return 'fas fa-volume-down text-gray-600'; return 'fas fa-volume-up text-gray-600'; };
-                const toggleFullscreen = (pid) => { const el = document.getElementById('player-target-' + pid).parentElement; if (!document.fullscreenElement) el.requestFullscreen(); else document.exitFullscreen(); };
+                const toggleFullscreen = (pid) => {
+                    try {
+                        const playerTarget = document.getElementById('player-target-' + pid);
+                        if (!playerTarget) return;
+                        const el = playerTarget.parentElement;
+                        if (!el) return;
+                        if (!document.fullscreenElement) {
+                            if (el.requestFullscreen) el.requestFullscreen().catch(() => {});
+                            else if (el.webkitRequestFullscreen) el.webkitRequestFullscreen();
+                            else if (el.msRequestFullscreen) el.msRequestFullscreen();
+                        } else {
+                            if (document.exitFullscreen) document.exitFullscreen().catch(() => {});
+                            else if (document.webkitExitFullscreen) document.webkitExitFullscreen();
+                            else if (document.msExitFullscreen) document.msExitFullscreen();
+                        }
+                    } catch (e) { console.warn('Fullscreen non supporté:', e); }
+                };
                 const getProgress = (pid) => state[pid].duration ? (state[pid].currentTime / state[pid].duration) * 100 : 0;
                 const formatTime = (s) => { if(!s) return "0:00"; const m=Math.floor(s/60); const sec=Math.floor(s%60); return `${m}:${sec<10?'0'+sec:sec}`; };
                 const togglePlaylistManager = (pid) => { if (isAdmin.value) managingPlaylists[pid] = !managingPlaylists[pid]; };
