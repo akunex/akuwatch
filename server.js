@@ -50,10 +50,18 @@ let connectedUsers = {}; // id -> pseudo
 
 // --- UTILITAIRES ---
 function extractVideoID(url) {
+    if (!url || typeof url !== 'string') return false;
     try {
-        var regExp = /^.*((youtu.be\/)|(v\/)|(\/u\/\w\/)|(embed\/)|(watch\?))\??v?=?([^#&?]*).*/;
-        var match = url.match(regExp);
-        return (match && match[7].length == 11) ? match[7] : false;
+        // Gère: youtube.com/watch?v=, youtu.be/, youtube.com/embed/, youtube.com/v/, youtube.com/shorts/
+        const patterns = [
+            /(?:youtube\.com\/watch\?.*v=|youtu\.be\/|youtube\.com\/embed\/|youtube\.com\/v\/|youtube\.com\/shorts\/)([a-zA-Z0-9_-]{11})/,
+            /^([a-zA-Z0-9_-]{11})$/ // ID direct
+        ];
+        for (const pattern of patterns) {
+            const match = url.match(pattern);
+            if (match && match[1]) return match[1];
+        }
+        return false;
     } catch (e) { return false; }
 }
 
@@ -179,7 +187,7 @@ io.on('connection', (socket) => {
         const pState = roomState[playerId];
         if (!pState) return;
         const playlist = pState.playlists.find(p => p.id === pState.activePlaylistId);
-        if (!playlist || playlist.videos.length === 0) return;
+        if (!playlist || !Array.isArray(playlist.videos) || playlist.videos.length === 0) return;
 
         if (playlist.videos.length === 1) {
             if (pState.isPlaylistLoop) {
@@ -193,22 +201,31 @@ io.on('connection', (socket) => {
 
         let nextVideoId = null;
         if (pState.isShuffle) {
-            let candidates = playlist.videos.filter(v => !pState.playedVideos.includes(v.id));
+            let candidates = playlist.videos.filter(v => v && v.id && !pState.playedVideos.includes(v.id));
             if (candidates.length === 0) {
                 if (pState.isPlaylistLoop) {
                     pState.playedVideos = [];
-                    candidates = playlist.videos.filter(v => v.id !== pState.currentVideoId);
-                    if (candidates.length === 0) candidates = playlist.videos;
+                    candidates = playlist.videos.filter(v => v && v.id && v.id !== pState.currentVideoId);
+                    if (candidates.length === 0) candidates = playlist.videos.filter(v => v && v.id);
                 } else { return; }
             }
+            if (candidates.length === 0) return;
             const randomIndex = Math.floor(Math.random() * candidates.length);
             nextVideoId = candidates[randomIndex].id;
         } else {
-            const currentIndex = playlist.videos.findIndex(v => v.id === pState.currentVideoId);
-            let nextIndex = currentIndex + 1;
+            const currentIndex = playlist.videos.findIndex(v => v && v.id === pState.currentVideoId);
+            let nextIndex;
+            // Si la vidéo actuelle n'est pas trouvée (-1), commencer à 0
+            if (currentIndex === -1) {
+                nextIndex = 0;
+            } else {
+                nextIndex = currentIndex + 1;
+            }
             if (nextIndex >= playlist.videos.length) {
                 if (pState.isPlaylistLoop) { nextIndex = 0; } else { return; }
             }
+            // Vérifier que la vidéo à cet index est valide
+            if (!playlist.videos[nextIndex] || !playlist.videos[nextIndex].id) return;
             nextVideoId = playlist.videos[nextIndex].id;
         }
 
@@ -268,26 +285,41 @@ io.on('connection', (socket) => {
     socket.on('admin:reorderVideos', onlyHost(({ playerId, playlistId, oldIndex, newIndex }) => {
         const pState = roomState[playerId];
         const pl = pState?.playlists.find(p => p.id === playlistId);
-        if (pl && pl.videos[oldIndex]) {
-            const item = pl.videos.splice(oldIndex, 1)[0];
-            pl.videos.splice(newIndex, 0, item);
-            if (pState.isShuffle) {
-                pState.isShuffle = false;
-                pState.playedVideos = [];
-                if (pState.currentVideoId) pState.playedVideos.push(pState.currentVideoId);
-                io.emit('player:shuffle', { playerId, isShuffle: false });
-            }
-            io.emit('updatePlaylists', { playerId, playlists: pState.playlists, activeId: pState.activePlaylistId });
+        if (!pl || !Array.isArray(pl.videos)) return;
+
+        // Valider les index
+        if (oldIndex < 0 || oldIndex >= pl.videos.length) return;
+        if (newIndex < 0) newIndex = 0;
+        if (newIndex >= pl.videos.length) newIndex = pl.videos.length - 1;
+        if (oldIndex === newIndex) return;
+
+        const item = pl.videos.splice(oldIndex, 1)[0];
+        if (!item) return;
+        pl.videos.splice(newIndex, 0, item);
+
+        if (pState.isShuffle) {
+            pState.isShuffle = false;
+            pState.playedVideos = [];
+            if (pState.currentVideoId) pState.playedVideos.push(pState.currentVideoId);
+            io.emit('player:shuffle', { playerId, isShuffle: false });
         }
+        io.emit('updatePlaylists', { playerId, playlists: pState.playlists, activeId: pState.activePlaylistId });
     }));
 
     socket.on('admin:reorderPlaylists', onlyHost(({ playerId, oldIndex, newIndex }) => {
         const pState = roomState[playerId];
-        if (pState && pState.playlists[oldIndex]) {
-            const item = pState.playlists.splice(oldIndex, 1)[0];
-            pState.playlists.splice(newIndex, 0, item);
-            io.emit('updatePlaylists', { playerId, playlists: pState.playlists, activeId: pState.activePlaylistId });
-        }
+        if (!pState || !Array.isArray(pState.playlists)) return;
+
+        // Valider les index
+        if (oldIndex < 0 || oldIndex >= pState.playlists.length) return;
+        if (newIndex < 0) newIndex = 0;
+        if (newIndex >= pState.playlists.length) newIndex = pState.playlists.length - 1;
+        if (oldIndex === newIndex) return;
+
+        const item = pState.playlists.splice(oldIndex, 1)[0];
+        if (!item) return;
+        pState.playlists.splice(newIndex, 0, item);
+        io.emit('updatePlaylists', { playerId, playlists: pState.playlists, activeId: pState.activePlaylistId });
     }));
 
     socket.on('admin:createPlaylist', onlyHost(({ playerId, name }) => {
@@ -332,15 +364,42 @@ io.on('connection', (socket) => {
 
     socket.on('admin:importData', onlyHost(({ playerId, data }) => {
         const pState = roomState[playerId];
-        if (pState && data && Array.isArray(data.playlists)) {
-            pState.playlists = data.playlists;
-            pState.activePlaylistId = data.playlists[0]?.id || 'default';
-            pState.isPlaylistLoop = !!data.isPlaylistLoop;
-            pState.isShuffle = !!data.isShuffle;
-            io.emit('updatePlaylists', { playerId, playlists: pState.playlists, activeId: pState.activePlaylistId });
-            io.emit('player:playlistLoop', { playerId, isPlaylistLoop: pState.isPlaylistLoop });
-            io.emit('player:shuffle', { playerId, isShuffle: pState.isShuffle });
+        if (!pState || !data || !Array.isArray(data.playlists)) return;
+
+        // Valider et nettoyer les playlists importées
+        const validPlaylists = data.playlists
+            .filter(pl => pl && typeof pl === 'object' && typeof pl.id === 'string' && typeof pl.name === 'string')
+            .map(pl => ({
+                id: pl.id,
+                name: pl.name,
+                videos: Array.isArray(pl.videos)
+                    ? pl.videos.filter(v => v && typeof v === 'object' && typeof v.id === 'string')
+                        .map(v => ({ id: v.id, url: v.url || '', title: v.title || 'Sans titre' }))
+                    : []
+            }));
+
+        // Si aucune playlist valide, créer une playlist par défaut
+        if (validPlaylists.length === 0) {
+            validPlaylists.push({ id: 'default', name: 'Playlist Principale', videos: [] });
         }
+
+        pState.playlists = validPlaylists;
+        pState.activePlaylistId = validPlaylists[0].id;
+        pState.isPlaylistLoop = !!data.isPlaylistLoop;
+        pState.isShuffle = !!data.isShuffle;
+        pState.playedVideos = [];
+
+        // Réinitialiser la vidéo en cours si elle n'existe plus dans les playlists
+        const allVideoIds = validPlaylists.flatMap(pl => pl.videos.map(v => v.id));
+        if (pState.currentVideoId && !allVideoIds.includes(pState.currentVideoId)) {
+            pState.currentVideoId = null;
+            pState.isPlaying = false;
+            io.emit('changeVideo', { playerId, videoId: null });
+        }
+
+        io.emit('updatePlaylists', { playerId, playlists: pState.playlists, activeId: pState.activePlaylistId });
+        io.emit('player:playlistLoop', { playerId, isPlaylistLoop: pState.isPlaylistLoop });
+        io.emit('player:shuffle', { playerId, isShuffle: pState.isShuffle });
     }));
 
     socket.on('admin:addVideo', onlyHost(({ playerId, url, playlistId }) => {
@@ -380,10 +439,36 @@ io.on('connection', (socket) => {
     socket.on('admin:removeVideo', onlyHost(({ playerId, playlistId, index }) => {
         const pState = roomState[playerId];
         const pl = pState?.playlists.find(p => p.id === playlistId);
-        if (pl) {
-            pl.videos.splice(index, 1);
-            io.emit('updatePlaylists', { playerId, playlists: pState.playlists, activeId: pState.activePlaylistId });
+        if (!pl || !Array.isArray(pl.videos) || index < 0 || index >= pl.videos.length) return;
+
+        // Sauvegarder l'ID de la vidéo qu'on va supprimer
+        const removedVideoId = pl.videos[index]?.id;
+        pl.videos.splice(index, 1);
+
+        // Si la vidéo supprimée était en cours de lecture
+        if (removedVideoId && pState.currentVideoId === removedVideoId) {
+            // Retirer de l'historique de lecture shuffle
+            pState.playedVideos = pState.playedVideos.filter(id => id !== removedVideoId);
+
+            // Si la playlist active est celle où on a supprimé
+            if (playlistId === pState.activePlaylistId) {
+                if (pl.videos.length > 0) {
+                    // Jouer la vidéo suivante (ou la première si on était à la fin)
+                    const nextIndex = Math.min(index, pl.videos.length - 1);
+                    pState.currentVideoId = pl.videos[nextIndex].id;
+                    pState.currentTime = 0;
+                    pState.isPlaying = false;
+                    io.emit('changeVideo', { playerId, videoId: pState.currentVideoId });
+                } else {
+                    // Playlist vide, réinitialiser
+                    pState.currentVideoId = null;
+                    pState.isPlaying = false;
+                    io.emit('changeVideo', { playerId, videoId: null });
+                }
+            }
         }
+
+        io.emit('updatePlaylists', { playerId, playlists: pState.playlists, activeId: pState.activePlaylistId });
     }));
 
     socket.on('disconnect', () => {
