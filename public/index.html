@@ -365,52 +365,51 @@
                                     }
                                 }
 
-                                    // VÉRIFICATION: Si une vidéo devrait être chargée mais le player est vide
-                                    // État -1 (unstarted) avec une vidéo qui devrait être là = problème
-                                    if (state[pid].currentVideoId && window.YT && window.YT.PlayerState) {
-                                        const now = Date.now();
-                                        // Si le player est unstarted (-1) depuis plus de 3 secondes et qu'on n'a pas tenté de reload récemment
-                                        if (pState === -1 && (now - lastVideoReloadAttempt[pid]) > 5000) {
-                                            console.log(`Player ${pid}: Vidéo manquante détectée, rechargement...`);
-                                            lastVideoReloadAttempt[pid] = now;
-                                            players[pid].cueVideoById(state[pid].currentVideoId);
-                                            if (state[pid].isPlaying) {
-                                                setTimeout(() => {
-                                                    const lag = (Date.now() - state[pid].lastUpdate) / 1000;
-                                                    players[pid].seekTo(state[pid].serverLastKnownTime + lag);
-                                                    players[pid].playVideo();
-                                                }, 500);
-                                            }
+                                // VÉRIFICATION: Si une vidéo devrait être chargée mais le player est vide
+                                // État -1 (unstarted) avec une vidéo qui devrait être là = problème
+                                if (state[pid].currentVideoId && window.YT && window.YT.PlayerState) {
+                                    const now = Date.now();
+                                    // Si le player est unstarted (-1) depuis plus de 3 secondes et qu'on n'a pas tenté de reload récemment
+                                    if (pState === -1 && (now - lastVideoReloadAttempt[pid]) > 5000) {
+                                        console.log(`Player ${pid}: Vidéo manquante détectée, rechargement...`);
+                                        lastVideoReloadAttempt[pid] = now;
+                                        players[pid].cueVideoById(state[pid].currentVideoId);
+                                        if (state[pid].isPlaying) {
+                                            setTimeout(() => {
+                                                const lag = (Date.now() - state[pid].lastUpdate) / 1000;
+                                                players[pid].seekTo(state[pid].serverLastKnownTime + lag);
+                                                players[pid].playVideo();
+                                            }, 500);
+                                        }
+                                    }
+                                }
+
+                                // SYNCHRONISATION FORCÉE (Spectateur Only)
+                                // Si le spectateur a désynchronisé son player (pause, seek manuel...), on le ramène de force
+                                if (!isAdmin.value && window.YT && window.YT.PlayerState) {
+                                    // Calcul du temps théorique serveur
+                                    let serverTime = state[pid].serverLastKnownTime;
+                                    if (state[pid].isPlaying) {
+                                        serverTime += (Date.now() - state[pid].lastUpdate) / 1000;
+                                    }
+
+                                    // 1. Force Play/Pause
+                                    if (state[pid].isPlaying) {
+                                        // Si le serveur joue, mais local est Pause/Cued/Unstarted/Ended -> Play
+                                        if (pState === YT.PlayerState.PAUSED || pState === YT.PlayerState.CUED || pState === -1 || pState === YT.PlayerState.ENDED) {
+                                            players[pid].playVideo();
+                                        }
+                                    } else {
+                                        // Si le serveur est pause, mais local joue -> Pause
+                                        if (pState === YT.PlayerState.PLAYING || pState === YT.PlayerState.BUFFERING) {
+                                            players[pid].pauseVideo();
                                         }
                                     }
 
-                                    // SYNCHRONISATION FORCÉE (Spectateur Only)
-                                    // Si le spectateur a désynchronisé son player (pause, seek manuel...), on le ramène de force
-                                    if (!isAdmin.value && window.YT && window.YT.PlayerState) {
-                                        // Calcul du temps théorique serveur
-                                        let serverTime = state[pid].serverLastKnownTime;
-                                        if (state[pid].isPlaying) {
-                                            serverTime += (Date.now() - state[pid].lastUpdate) / 1000;
-                                        }
-
-                                        // 1. Force Play/Pause
-                                        if (state[pid].isPlaying) {
-                                            // Si le serveur joue, mais local est Pause/Cued/Unstarted/Ended -> Play
-                                            if (pState === YT.PlayerState.PAUSED || pState === YT.PlayerState.CUED || pState === -1 || pState === YT.PlayerState.ENDED) {
-                                                players[pid].playVideo();
-                                            }
-                                        } else {
-                                            // Si le serveur est pause, mais local joue -> Pause
-                                            if (pState === YT.PlayerState.PLAYING || pState === YT.PlayerState.BUFFERING) {
-                                                players[pid].pauseVideo();
-                                            }
-                                        }
-
-                                        // 2. Force Seek (Correction décalage > 1.5s)
-                                        const localTime = players[pid].getCurrentTime();
-                                        if (Math.abs(localTime - serverTime) > 1.5) {
-                                            players[pid].seekTo(serverTime, true);
-                                        }
+                                    // 2. Force Seek (Correction décalage > 1.5s)
+                                    const localTime = players[pid].getCurrentTime();
+                                    if (Math.abs(localTime - serverTime) > 1.5) {
+                                        players[pid].seekTo(serverTime, true);
                                     }
                                 }
                             } catch(e) {}
