@@ -252,6 +252,7 @@
         createApp({
             setup() {
                 const roleChosen = ref(false), isAdmin = ref(false), username = ref(''), connectedUsers = ref([]), hasHost = ref(false), draggingIndex = ref(-1);
+                const savedCredentials = ref(null); // Pour re-login automatique après reconnexion
                 const managingPlaylists = reactive({ 1: false, 2: false });
                 
                 const state = reactive({
@@ -266,15 +267,27 @@
                 const chatOpen = ref(false), chatInput = ref(''), chatMessages = ref([]), chatContainer = ref(null);
                 const addLinkModal = reactive({ visible: false, url: '', targetPid: 1, targetPlId: '' });
 
-                const chooseRole = (role) => {
-                    if (!username.value.trim()) { alert("Pseudo requis."); return; }
+                const chooseRole = (role, autoReconnect = false, savedPassword = null) => {
+                    if (!username.value.trim()) { if (!autoReconnect) alert("Pseudo requis."); return; }
                     if (role === 'host') {
-                        if (hasHost.value) { alert("Hôte déjà présent."); return; }
-                        const password = prompt("Mot de passe Hôte :");
-                        if (password === null) return; 
-                        socket.emit('loginHost', { username: username.value, password }, (res) => { if (res.success) { isAdmin.value = true; roleChosen.value = true; } else alert(res.message); });
+                        if (hasHost.value && !autoReconnect) { alert("Hôte déjà présent."); return; }
+                        const password = autoReconnect ? savedPassword : prompt("Mot de passe Hôte :");
+                        if (password === null) return;
+                        socket.emit('loginHost', { username: username.value, password }, (res) => {
+                            if (res.success) {
+                                isAdmin.value = true;
+                                roleChosen.value = true;
+                                savedCredentials.value = { role: 'host', password };
+                            } else if (!autoReconnect) alert(res.message);
+                        });
                     } else {
-                        socket.emit('loginViewer', username.value, (res) => { if (res.success) { isAdmin.value = false; roleChosen.value = true; } else alert(res.message); });
+                        socket.emit('loginViewer', username.value, (res) => {
+                            if (res.success) {
+                                isAdmin.value = false;
+                                roleChosen.value = true;
+                                savedCredentials.value = { role: 'viewer' };
+                            } else if (!autoReconnect) alert(res.message);
+                        });
                     }
                 };
 
@@ -295,10 +308,31 @@
                                         }
                                     }
                                 },
-                                'onStateChange': (e) => onPlayerStateChange(e, pid)
+                                'onStateChange': (e) => onPlayerStateChange(e, pid),
+                                'onError': (e) => onPlayerError(e, pid)
                             }
                         });
                     });
+                };
+
+                // Gestion des erreurs YouTube - tente de recharger la vidéo
+                const onPlayerError = (event, pid) => {
+                    console.warn(`Erreur YouTube Player ${pid}:`, event.data);
+                    // Codes d'erreur: 2=invalid param, 5=HTML5 error, 100=not found, 101/150=not embeddable
+                    if (state[pid].currentVideoId) {
+                        // Attendre un peu puis tenter de recharger la vidéo
+                        setTimeout(() => {
+                            if (players[pid] && state[pid].currentVideoId) {
+                                console.log(`Tentative de rechargement de la vidéo pour Player ${pid}`);
+                                players[pid].cueVideoById(state[pid].currentVideoId);
+                                if (state[pid].isPlaying) {
+                                    const lag = (Date.now() - state[pid].lastUpdate) / 1000;
+                                    players[pid].seekTo(state[pid].serverLastKnownTime + lag);
+                                    players[pid].playVideo();
+                                }
+                            }
+                        }, 2000);
+                    }
                 };
 
                 const onPlayerStateChange = (event, pid) => {
@@ -308,22 +342,44 @@
                     }
                 };
 
+                // Variable pour tracker si on a déjà tenté de recharger la vidéo récemment
+                const lastVideoReloadAttempt = reactive({ 1: 0, 2: 0 });
+
                 onMounted(() => {
                     setInterval(() => {
                         [1, 2].forEach(pid => {
                             try {
                                 if (players[pid] && players[pid].getPlayerState) {
+                                    const pState = players[pid].getPlayerState();
+
                                     // Mise à jour pour TOUT LE MONDE (Admin et Viewer) pour le slider UI
                                     if (players[pid].getCurrentTime) {
                                         state[pid].currentTime = players[pid].getCurrentTime();
                                         state[pid].duration = players[pid].getDuration();
                                     }
 
+                                    // VÉRIFICATION: Si une vidéo devrait être chargée mais le player est vide
+                                    // État -1 (unstarted) avec une vidéo qui devrait être là = problème
+                                    if (state[pid].currentVideoId && window.YT && window.YT.PlayerState) {
+                                        const now = Date.now();
+                                        // Si le player est unstarted (-1) depuis plus de 3 secondes et qu'on n'a pas tenté de reload récemment
+                                        if (pState === -1 && (now - lastVideoReloadAttempt[pid]) > 5000) {
+                                            console.log(`Player ${pid}: Vidéo manquante détectée, rechargement...`);
+                                            lastVideoReloadAttempt[pid] = now;
+                                            players[pid].cueVideoById(state[pid].currentVideoId);
+                                            if (state[pid].isPlaying) {
+                                                setTimeout(() => {
+                                                    const lag = (Date.now() - state[pid].lastUpdate) / 1000;
+                                                    players[pid].seekTo(state[pid].serverLastKnownTime + lag);
+                                                    players[pid].playVideo();
+                                                }, 500);
+                                            }
+                                        }
+                                    }
+
                                     // SYNCHRONISATION FORCÉE (Spectateur Only)
                                     // Si le spectateur a désynchronisé son player (pause, seek manuel...), on le ramène de force
                                     if (!isAdmin.value && window.YT && window.YT.PlayerState) {
-                                        const pState = players[pid].getPlayerState();
-                                        
                                         // Calcul du temps théorique serveur
                                         let serverTime = state[pid].serverLastKnownTime;
                                         if (state[pid].isPlaying) {
@@ -407,10 +463,39 @@
                     state[playerId].lastUpdate = Date.now();
                     if (players[playerId]) { players[playerId].seekTo(time); players[playerId].pauseVideo(); }
                 });
-                socket.on('player:seek', ({ playerId, time }) => { 
+                socket.on('player:seek', ({ playerId, time }) => {
                     state[playerId].serverLastKnownTime = time;
                     state[playerId].lastUpdate = Date.now();
-                    if (players[playerId]) players[playerId].seekTo(time); 
+                    if (players[playerId]) players[playerId].seekTo(time);
+                });
+
+                // Gestion de la reconnexion automatique Socket.io
+                socket.on('connect', () => {
+                    console.log('Socket connecté:', socket.id);
+                    // Si on était déjà loggé, tenter de se reconnecter automatiquement
+                    if (savedCredentials.value && username.value) {
+                        console.log('Tentative de reconnexion automatique...');
+                        if (savedCredentials.value.role === 'host') {
+                            chooseRole('host', true, savedCredentials.value.password);
+                        } else {
+                            chooseRole('viewer', true);
+                        }
+                    }
+                });
+
+                socket.on('disconnect', (reason) => {
+                    console.log('Socket déconnecté:', reason);
+                });
+
+                // Demande de resync manuel (peut être appelé par le serveur ou après reconnexion)
+                socket.on('requestReauth', () => {
+                    if (savedCredentials.value && username.value) {
+                        if (savedCredentials.value.role === 'host') {
+                            chooseRole('host', true, savedCredentials.value.password);
+                        } else {
+                            chooseRole('viewer', true);
+                        }
+                    }
                 });
 
                 const sendMessage = () => { if (!chatInput.value.trim()) return; socket.emit('chat:sendMessage', chatInput.value); chatInput.value = ''; };
